@@ -76,10 +76,13 @@ final class WP_Auth_Custom_API_ProxiCE
             // print_r($user);
 
             (array) $roles = $user->roles;
-            if (in_array('administrator', $roles)) {
+            if (
+                in_array('administrator', $roles) ||
+                in_array('particuliers', $roles)
+            ) {
                 return $user; // another auth provider already succeeded
             } else {
-                $user = null; // we won't trust local password and validate against API
+                $user = null; // we won't trust local password auth and validate against API
             }
         }
 
@@ -150,11 +153,16 @@ final class WP_Auth_Custom_API_ProxiCE
             !empty(self::$remote_jwt_token_decoded) &&
             is_array(self::$remote_jwt_token_decoded['payload']);
 
-
-
         if (!$ok) {
             $msg = isset($result['err']) ? sanitize_text_field((string) $result['err']) : __('Invalid username or password.', 'wp-auth-custom-api-proxice');
             return new WP_Error('invalid_credentials', $msg);
+        }
+
+
+        // Users linked to a white label company have no access here
+        $wlcID = self::$remote_jwt_token_decoded['payload']['wlcID'] ?: null;
+        if (!empty($wlcID)) {
+            // return new WP_Error('not_authorized_proxice', "You are not authorized to use this service. (WLC user)");
         }
 
         $wp_user = self::create_or_update_wp_user($opts, self::$remote_jwt_token, $result);
@@ -457,19 +465,11 @@ final class WP_Auth_Custom_API_ProxiCE
 
         $user = get_user_by('id', $user_id);
 
-        // Store external ID for future linkage
-        // $ext_id = self::pluck($profile, (string) $opts['map_ext_id']);
-        if ($external_user_id) {
-            update_user_meta($user_id, 'external_user_id', sanitize_text_field((string) $external_user_id));
-        }
-
-        if ($membershipCard) {
-            update_user_meta($user_id, 'membership_card', sanitize_text_field((string) $membershipCard));
-            update_user_meta($user_id, 'membership_card_expire_date', sanitize_text_field((string) $membershipCardExpireDate));
-        }
 
         // Apply roles from API, if provided and valid
-        self::apply_api_roles($user, $profile, $company);
+        // self::apply_api_roles($user, $profile, $company);
+
+        self::update_wp_user($user, $profile, $company);
 
         return $user;
     }
@@ -478,6 +478,61 @@ final class WP_Auth_Custom_API_ProxiCE
     {
         // TODO: update user email etc...
 
+        // Store external ID for future linkage
+        // $ext_id = self::pluck($profile, (string) $opts['map_ext_id']);
+
+        $user_id = $user->ID;
+
+        $external_user_id = self::pluck($profile, '_id');
+        $username = (string) self::pluck($profile, 'username'); // is membership card number at this time
+        $email = self::pluck($profile, 'email');
+
+        $membershipCard = self::pluck($profile, 'membershipCard');
+        $d = self::pluck($profile, 'validDate');
+        $membershipCardExpireDate = $d ? (new DateTime($d))->format('Y-m-d') : null;
+
+        $firstName = self::pluck($profile, 'firstName');
+        $lastName = self::pluck($profile, 'lastName');
+        $local_offers_status = self::pluck($profile, 'local_offers_status') ?: false;
+        $company_offers_status = self::pluck($profile, 'company_offers_status') ?: false;
+        $mobile = self::pluck($profile, 'mobile');
+        $status = self::pluck($profile, 'status');
+        $companyID = self::pluck($profile, 'companyID');
+        $WLC = (bool) self::pluck($profile, 'WLC') ?: false; // boolean
+        $wlcID = self::pluck($profile, 'wlcID');
+
+
+        // Update the WP User
+        $userdata = [
+            'ID'         => $user_id,
+            'first_name' => $firstName,
+            'last_name'  => $lastName,
+            'user_email' => $email,
+        ];
+        $update_user = wp_update_user($userdata);
+        if (is_wp_error($update_user)) {
+            return new WP_Error('failed_update_local_user', $update_user->get_error_message());
+        }
+
+        if ($external_user_id) {
+            update_user_meta($user_id, 'external_user_id', sanitize_text_field((string) $external_user_id));
+        }
+
+        if ($membershipCard) {
+            update_user_meta($user_id, 'membership_card', sanitize_text_field((string) $membershipCard));
+            update_user_meta($user_id, 'membership_card_expire_date', sanitize_text_field((string) $membershipCardExpireDate));
+        } else {
+            // delete entries
+            delete_user_meta($user_id, 'membership_card');
+            delete_user_meta($user_id, 'membership_card_expire_date');
+        }
+
+        update_user_meta($user_id, 'mobile', $mobile ?: '');
+        update_user_meta($user_id, 'status', $status ? 't' : 'f');
+        update_user_meta($user_id, 'company_id', $companyID ?: '');
+
+        update_user_meta($user_id, 'local_offers_status', $local_offers_status ? 't' : 'f');
+        update_user_meta($user_id, 'company_offers_status', $company_offers_status ? 't' : 'f');
 
         self::apply_api_roles($user, $profile, $company);
 
@@ -528,7 +583,6 @@ final class WP_Auth_Custom_API_ProxiCE
 
         if ($company) {
             $companyName = trim($company['companynameFrench']);
-            // $companyKey = self::to_upper_lo_dash($companyName);
             $roles = [$companyName];
         }
 
@@ -540,8 +594,8 @@ final class WP_Auth_Custom_API_ProxiCE
             foreach ($roles as $display_name) {
                 $role_name = self::get_role_slug_by_display_name($display_name);
 
-                if (empty($roleSlug)) {
-                    $role_name = self::to_upper_lo_dash('CORP_' . $display_name);
+                if (empty($role_name)) {
+                    $role_name = strtolower(self::safe_str('corp_' . $display_name));
 
                     $role = add_role(
                         $role_name,
@@ -553,6 +607,13 @@ final class WP_Auth_Custom_API_ProxiCE
                         //     'upload_files' => true,
                         // ]
                     );
+
+                    if (null === $role) {
+                        // TODO: handle error
+                        return;
+                    }
+
+                    $role_name = $role->name;
                 }
 
                 $user->add_role($role_name);
@@ -888,16 +949,16 @@ final class WP_Auth_Custom_API_ProxiCE
     }
 
 
-    private static function to_upper_lo_dash(string $str): string
+    private static function safe_str(string $str, string $separator = '_'): string
     {
         $str = trim(self::remove_accents($str));
         // Trim spaces, replace non-alphanumeric sequences with underscores
-        $formatted = preg_replace('/[^A-Za-z0-9_]+/', '_', $str);
+        $formatted = preg_replace('/[^A-Za-z0-9_]+/', $separator, $str);
 
-        $formatted = trim($formatted, '_');
+        $formatted = trim($formatted, $separator);
 
         // Convert to uppercase
-        return strtoupper($formatted);
+        return $formatted;
     }
 
     private static function remove_accents(string $str): string
