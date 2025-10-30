@@ -528,11 +528,11 @@ final class WP_Auth_Custom_API_ProxiCE
         }
 
         update_user_meta($user_id, 'mobile', $mobile ?: '');
-        update_user_meta($user_id, 'status', $status ? 't' : 'f');
+        update_user_meta($user_id, 'status', $status ? '1' : '0');
         update_user_meta($user_id, 'company_id', $companyID ?: '');
 
-        update_user_meta($user_id, 'local_offers_status', $local_offers_status ? 't' : 'f');
-        update_user_meta($user_id, 'company_offers_status', $company_offers_status ? 't' : 'f');
+        update_user_meta($user_id, 'local_offers_status', $local_offers_status ? '1' : '0');
+        update_user_meta($user_id, 'company_offers_status', $company_offers_status ? '1' : '0');
 
         self::apply_api_roles($user, $profile, $company);
 
