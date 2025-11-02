@@ -539,47 +539,27 @@ final class WP_Auth_Custom_API_ProxiCE
         return $user;
     }
 
-
-
     /**
-     * Update profile fields from the API mapping.
+     * If the user is linked to a company try find role matching companynameFrench to role.displayName
+     * If WP_Role not exists create it and set role slug to user
+     * If no company apply role.no_company
+     * 
+     * @param WP_User|null $user
+     * @param array $profile
+     * @param array|null $company
+     * @return void
      */
-    // private static function update_user_profile_from_map(int $user_id, array $opts, array $data): void
-    // {
-    //     $first = self::pluck($data, (string) $opts['map_first']);
-    //     $last  = self::pluck($data, (string) $opts['map_last']);
-    //     $email = self::pluck($data, (string) $opts['map_email']);
-
-    //     $ud = ['ID' => $user_id];
-    //     if ($first) {
-    //         $ud['first_name'] = $first;
-    //     }
-    //     if ($last) {
-    //         $ud['last_name']  = $last;
-    //     }
-    //     if ($email && is_email($email)) {
-    //         $ud['user_email'] = $email;
-    //     }
-
-    //     if (count($ud) > 1) {
-    //         wp_update_user($ud);
-    //     }
-
-    //     self::apply_api_roles(get_user_by('id', $user_id), $opts, $data);
-    // }
-
     private static function apply_api_roles(?WP_User $user, array $profile, ?array $company): void
     {
         if (!$user) {
             return;
         }
-        // $key = (string) $opts['map_roles'];
-        // $roles = self::pluck($data, $key);
-
 
         // $user_info = get_userdata($user->ID);
 
-        $roles = ['No Company'];
+        $defaultRoleDisplayName = 'No Company';
+
+        $roles = [$defaultRoleDisplayName];
 
         if ($company) {
             $companyName = trim($company['companynameFrench']);
@@ -595,7 +575,7 @@ final class WP_Auth_Custom_API_ProxiCE
                 $role_name = self::get_role_slug_by_display_name($display_name);
 
                 if (empty($role_name)) {
-                    $role_name = strtolower(self::safe_str('corp_' . $display_name));
+                    $role_name = sanitize_key(strtolower(self::safe_str('corp_' . $display_name)));
 
                     $role = add_role(
                         $role_name,
@@ -608,8 +588,12 @@ final class WP_Auth_Custom_API_ProxiCE
                         // ]
                     );
 
-                    if (null === $role) {
+                    if (
+                        null === $role ||
+                        !($role instanceof WP_Role)
+                    ) {
                         // TODO: handle error
+
                         return;
                     }
 
@@ -618,10 +602,6 @@ final class WP_Auth_Custom_API_ProxiCE
 
                 $user->add_role($role_name);
             }
-
-
-            // $existing = wp_roles()->roles;
-
 
 
 
