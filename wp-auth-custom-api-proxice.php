@@ -162,7 +162,7 @@ final class WP_Auth_Custom_API_ProxiCE
         // Users linked to a white label company have no access here
         $wlcID = self::$remote_jwt_token_decoded['payload']['wlcID'] ?: null;
         if (!empty($wlcID)) {
-            // return new WP_Error('not_authorized_proxice', "You are not authorized to use this service. (WLC user)");
+            return new WP_Error('not_authorized_proxice', __("You are not authorized to use this service. (WLC user)", 'wp-auth-custom-api-proxice'));
         }
 
         $wp_user = self::create_or_update_wp_user($opts, self::$remote_jwt_token, $result);
