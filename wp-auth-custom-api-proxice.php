@@ -96,19 +96,10 @@ final class WP_Auth_Custom_API_ProxiCE
         return [
             'enabled'        => 1,
             'api_base'       => 'https://proxicetech.fr/nodejs', // e.g. https://api.example.com
-            // 'method'      => 'POST',
-            // 'api_key'     => '',
-            // 'header_key'  => 'X-Auth-Key',
             'timeout'        => 8,     // HTTP timeout (seconds)
             'sslverify'      => 1,     // Verify TLS certificate
             'auto_provision' => 1,     // Create local user if missing
             'role_default'   => 'subscriber', // Fallback role when mapping is not available
-            // 'map_username' => 'username',
-            // 'map_email'    => 'email',
-            // 'map_first'    => 'first_name',
-            // 'map_last'     => 'last_name',
-            // 'map_roles'    => 'roles',
-            // 'map_ext_id'   => 'id',
         ];
     }
 
@@ -739,19 +730,10 @@ final class WP_Auth_Custom_API_ProxiCE
         $fields = [
             'enabled'        => __('Enable API authentication', 'wp-auth-custom-api-proxice'),
             'api_base'       => __('API base URL', 'wp-auth-custom-api-proxice'),
-            // 'method'       => __('HTTP method (GET/POST)', 'wp-auth-custom-api-proxice'),
-            // 'api_key'      => __('API key / token (optional)', 'wp-auth-custom-api-proxice'),
-            // 'header_key'   => __('Auth header key', 'wp-auth-custom-api-proxice'),
             'timeout'        => __('Timeout (seconds)', 'wp-auth-custom-api-proxice'),
             'sslverify'      => __('Verify SSL certificate', 'wp-auth-custom-api-proxice'),
             'auto_provision' => __('Auto-provision local users', 'wp-auth_custom_api_proxice'),
             'role_default'   => __('Default role', 'wp-auth-custom-api-proxice'),
-            // 'map_username' => __('Map: username path', 'wp-auth-custom-api-proxice'),
-            // 'map_email'    => __('Map: email path', 'wp-auth-custom-api-proxice'),
-            // 'map_first'    => __('Map: first name path', 'wp-auth-custom-api-proxice'),
-            // 'map_last'     => __('Map: last name path', 'wp-auth-custom-api-proxice'),
-            // 'map_roles'    => __('Map: roles path', 'wp-auth-custom-api-proxice'),
-            // 'map_ext_id'   => __('Map: external id path', 'wp-auth-custom-api-proxice'),
         ];
 
         foreach ($fields as $key => $label) {
@@ -771,19 +753,11 @@ final class WP_Auth_Custom_API_ProxiCE
         $out = [];
         $out['enabled']        = empty($input['enabled']) ? 0 : 1;
         $out['api_base']       = esc_url_raw($input['api_base'] ?? $d['api_base']);
-        // $out['method']      = in_array(strtoupper($input['method'] ?? 'POST'), ['GET','POST'], true) ? strtoupper($input['method']) : 'POST';
-        // $out['api_key']     = sanitize_text_field($input['api_key'] ?? '');
         // $out['header_key']  = sanitize_text_field($input['header_key'] ?? $d['header_key']);
         $out['timeout']        = max(1, (int) ($input['timeout'] ?? $d['timeout']));
         $out['sslverify']      = empty($input['sslverify']) ? 0 : 1;
         $out['auto_provision'] = empty($input['auto_provision']) ? 0 : 1;
         $out['role_default']   = sanitize_key($input['role_default'] ?? $d['role_default']);
-        // $out['map_username'] = sanitize_text_field($input['map_username'] ?? $d['map_username']);
-        // $out['map_email']    = sanitize_text_field($input['map_email'] ?? $d['map_email']);
-        // $out['map_first']    = sanitize_text_field($input['map_first'] ?? $d['map_first']);
-        // $out['map_last']     = sanitize_text_field($input['map_last'] ?? $d['map_last']);
-        // $out['map_roles']    = sanitize_text_field($input['map_roles'] ?? $d['map_roles']);
-        // $out['map_ext_id']   = sanitize_text_field($input['map_ext_id'] ?? $d['map_ext_id']);
         return $out;
     }
 
