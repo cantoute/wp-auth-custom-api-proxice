@@ -514,6 +514,16 @@ final class WP_Auth_Custom_API_ProxiCE
             return new WP_Error('failed_update_local_user', $update_user->get_error_message());
         }
 
+        if (
+            !empty($username) &&
+            $username !== $user->user_login
+        ) {
+            $updated = self::update_wp_user_login($user->ID, $username);
+            if (!empty($updated)) {
+                $user->user_login = $username;
+            }
+        }
+
         if ($external_user_id) {
             update_user_meta($user_id, 'external_user_id', sanitize_text_field((string) $external_user_id));
         }
@@ -1012,6 +1022,30 @@ final class WP_Auth_Custom_API_ProxiCE
         ];
 
         return strtr($str, $accents);
+    }
+
+    /**
+     * Undocumented function
+     *
+     * @param integer $ID
+     * @param string $user_login
+     * @return false|int returns number of lines updated or false if error
+     */
+    private static function update_wp_user_login(int $ID, string $user_login)
+    {
+        global $wpdb;
+
+        $updated = $wpdb->update(
+            $wpdb->users,
+            ['user_login' => $user_login],
+            ['ID' => $ID]
+        );
+
+        if (!empty($updated)) {
+            clean_user_cache($ID);
+        }
+
+        return $updated;
     }
 }
 
