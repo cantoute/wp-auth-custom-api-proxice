@@ -1137,15 +1137,20 @@ final class WP_Auth_Custom_API_ProxiCE
     {
         global $wpdb;
 
-        $updated = $wpdb->update(
-            $wpdb->users,
-            ['user_login' => $user_login],
-            ['ID' => $ID]
-        );
+        $updated = false;
 
-        if (!empty($updated)) {
-            clean_user_cache($ID);
+        if (!empty($ID)) {
+            $updated = $wpdb->update(
+                $wpdb->users,
+                ['user_login' => $user_login],
+                ['ID' => $ID]
+            );
+
+            if (!empty($updated)) {
+                clean_user_cache($ID);
+            }
         }
+
 
         return $updated;
     }
