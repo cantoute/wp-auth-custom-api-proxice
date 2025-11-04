@@ -79,7 +79,7 @@ final class WP_Auth_Custom_API_ProxiCE
      */
     public static function init(): void
     {
-        add_filter('authenticate', [__CLASS__, 'authenticate_via_api'], 30, 3);
+        add_filter('authenticate', [__CLASS__, 'authenticate_via_api'], 30, 3); // priority (30) to run after core username/password auth
         add_action('admin_menu', [__CLASS__, 'admin_menu']);
         add_action('admin_init', [__CLASS__, 'register_settings']);
         add_action('profile_update', [__CLASS__, 'maybe_sync_profile_back'], 10, 2); // optional no-op
