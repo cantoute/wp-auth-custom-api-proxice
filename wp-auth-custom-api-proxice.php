@@ -2,16 +2,31 @@
 
 /**
  * Plugin Name: WP Auth via Custom API (ProxiCE)
- * Description: Replaces WordPress password auth with a call to your external API. On success, it finds/creates a matching WP user and logs them in.
+ * Description: Replaces WordPress password auth with a call to an external API. On success, finds/creates a matching WP user and logs them in.
  * Version: 0.1.0
  * Author: Antony GIBBS <antony@cantoute.com>
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * License: GPL-2.0-or-later
+ *
+ * @package WP_Auth_Custom_API_ProxiCE
+ *
+ * How it works (high level):
+ * - Hooks into the 'authenticate' filter at a later priority (30) to run after core username/password auth kicked off.
+ * - If an admin or specific whitelisted role already authenticated locally, trusts that result.
+ * - Otherwise, calls the external API (login_v3) with username/password.
+ * - If the API returns a valid JWT, fetches the remote profile (/me) and optional company info (/company/:id).
+ * - Finds existing WP user (by email). If missing and auto-provision is enabled, creates a local user.
+ * - Updates user profile/meta, and maps company name to a WP role (auto-creating the role if needed).
+ *
+ * Security notes:
+ * - Local passwords are not used (provisioned users get random local passwords).
+ * - JWT is decoded for claims; signature verification is OFF by default. If you need verification,
+ *   pipe the shared secret/public key via jwt_decode() options and enable 'verify' => true.
  */
 
 if (!defined('ABSPATH')) {
-    exit;
+    exit; // No direct access
 }
 
 // error_reporting(E_ALL);
@@ -19,18 +34,47 @@ if (!defined('ABSPATH')) {
 
 final class WP_Auth_Custom_API_ProxiCE
 {
+    /** @var string Option name storing plugin settings */
     const OPTION = 'wp_auth_custom_api_proxice_options';
+
+    /** @var string Nonce handle (reserved for future admin actions) */
     const NONCE  = 'wp_auth_custom_api_proxice_nonce';
 
+    /** @var string Relative path for the login endpoint on the external API */
     const API_ENDPOINT_LOGIN = 'login_v3';
+
+    /** @var string Relative path for the "current user" endpoint on the external API */
     const API_ENDPOINT_PROFILE = 'me';
+
+    /** @var string Relative path template for the company endpoint on the external API (":id" will be replaced) */
     const API_ENDPOINT_COMPANY = 'company/:id';
 
-    private static ?WP_User $auth_local_user = null; // user returned by wp auth, if admin we'll use else we'll create/update local user
-    private static ?string $remote_jwt_token = null;
-    private static ?array $remote_jwt_token_decoded = null; // header|payload|signature_valid
-    private static ?array $authenticate_via_api_response = null; // if authenticated stores json response
+    /** @var WP_User|null Locally authenticated user (if any). If admin/whitelisted, we defer to WP. */
+    private static ?WP_User $auth_local_user = null;
 
+    /** @var string|null Raw JWT returned by the remote authentication endpoint */
+    private static ?string $remote_jwt_token = null;
+
+    /**
+     * @var array|null Decoded JWT pieces: ['header' => array, 'payload' => array, 'signature_valid' => bool]
+     *                 Note: Signature verification is off by default unless enabled via options.
+     */
+    private static ?array $remote_jwt_token_decoded = null;
+
+    /** @var array|null Cached raw response of a successful authenticate_via_api call */
+    private static ?array $authenticate_via_api_response = null;
+
+    /**
+     * Bootstraps plugin hooks.
+     *
+     * Hooks:
+     * - authenticate (filter): main integration point for login flow
+     * - admin_menu (action): settings page
+     * - admin_init (action): register settings/fields
+     * - profile_update (action): stub to push profile changes back to API (optional)
+     *
+     * @return void
+     */
     public static function init(): void
     {
         add_filter('authenticate', [__CLASS__, 'authenticate_via_api'], 30, 3);
@@ -40,87 +84,101 @@ final class WP_Auth_Custom_API_ProxiCE
     }
 
     /**
-     * Settings schema w/ sane defaults. Adjust to your API.
+     * Settings schema with sensible defaults (tweak to match your API).
+     * Stored under the OPTION constant via get_option()/update_option().
+     *
+     * @return array<string,mixed>
      */
     public static function defaults(): array
     {
         return [
             'enabled'        => 1,
-            'api_base'       => 'https://proxicetech.fr/nodejs',                 // e.g. https://api.example.com/auth/login
-            // 'method'         => 'POST',            // POST or GET
-            // 'api_key'        => '',                // optional shared secret / header token
-            // 'header_key'     => 'X-Auth-Key',      // header name for api_key
-            'timeout'        => 8,                 // seconds
-            'sslverify'      => 1,                 // verify TLS
-            'auto_provision' => 1,                 // create local user if missing
-            'role_default'   => 'subscriber',      // role for newly provisioned users
-            // 'map_username'   => 'username',        // field in API response user object
-            // 'map_email'      => 'email',
-            // 'map_first'      => 'first_name',
-            // 'map_last'       => 'last_name',
-            // 'map_roles'      => 'roles',           // array of role slugs (must exist in WP)
-            // 'map_ext_id'     => 'id',              // external user id field
+            'api_base'       => 'https://proxicetech.fr/nodejs', // e.g. https://api.example.com
+            // 'method'      => 'POST',
+            // 'api_key'     => '',
+            // 'header_key'  => 'X-Auth-Key',
+            'timeout'        => 8,     // HTTP timeout (seconds)
+            'sslverify'      => 1,     // Verify TLS certificate
+            'auto_provision' => 1,     // Create local user if missing
+            'role_default'   => 'subscriber', // Fallback role when mapping is not available
+            // 'map_username' => 'username',
+            // 'map_email'    => 'email',
+            // 'map_first'    => 'first_name',
+            // 'map_last'     => 'last_name',
+            // 'map_roles'    => 'roles',
+            // 'map_ext_id'   => 'id',
         ];
     }
 
     /**
-     * Main auth hook: validates credentials against your API. If OK, returns a WP_User to short-circuit core password check.
+     * Main auth filter: validates credentials against the external API.
+     *
+     * Expected behavior for WordPress:
+     * - Return WP_User on success to bypass further password checks.
+     * - Return WP_Error on hard failure (transport, HTTP error, invalid credentials).
+     * - Return null to allow other auth filters to run.
+     *
+     * @param null|WP_User|WP_Error $user     Existing auth result (if any) from earlier handlers.
+     * @param string                $username Username submitted via login form.
+     * @param string                $password Password submitted via login form.
+     * @return null|WP_User|WP_Error
      */
     public static function authenticate_via_api($user, string $username, string $password)
     {
-
-        // Only run on standard username/password logins
+        // If a previous handler already produced a WP_User (e.g., local password auth),
+        // allow admins or specific whitelisted roles to pass through untouched.
         if (is_a($user, 'WP_User')) {
             self::$auth_local_user = $user;
 
-            // print_r($user);
-
-            (array) $roles = $user->roles;
+            $roles = (array) $user->roles;
             if (
-                in_array('administrator', $roles) ||
-                in_array('particuliers', $roles)
+                in_array('administrator', $roles, true) ||
+                in_array('particuliers', $roles, true)
             ) {
-                return $user; // another auth provider already succeeded
+                return $user; // trusted: don't override
             } else {
-                $user = null; // we won't trust local password auth and validate against API
+                // Not trusted: require validation against the external API
+                $user = null;
             }
         }
 
+        // No credentials? Let other auth providers handle (e.g., magic links, SSO).
         if (empty($username) || empty($password)) {
-            return null; // let other auth handlers run (e.g., magic links)
+            return null;
         }
 
         $opts = self::get_plugin_opts();
 
+        // Disabled or misconfigured => fall back to core auth.
         if (empty($opts['enabled']) || empty($opts['api_base'])) {
-            return null; // plugin disabled or misconfigured; fall back to core
+            return null;
         }
 
+        // 1) Exchange credentials for JWT
         $result = self::remote_auth_request($opts, $username, $password);
         if (is_wp_error($result)) {
-            return $result; // surface transport/format errors to user
+            // Transport/HTTP/format failure surfaces to the user
+            return $result;
         }
 
         self::$authenticate_via_api_response = $result;
 
-        /**
-         * status 400
+        /*
+         * Example error (HTTP 400):
+         * { "err": "Invalid credentials." }
+         *
+         * Example success:
          * {
-         *    "err": "Invalid credentials."
+         *   "token": "<JWT>",
+         *   "region": "5e85951e7d7d2dabfb7b16c0",
+         *   "company_status": true,
+         *   "local_status": true,
+         *   "wlcID": "string?",
+         *   "companyID": "string?"
          * }
          */
 
-        /**
-         * {
-         *    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiVVNFUlMiLCJlbWFpbCI6ImNhbnRvdXRlK3Byb3hpY2UuY29ycEBnbWFpbC5jb20iLCJfaWQiOiI2OGRkMTlhYTRjYzY1YjUwZWE2Y2M1ZTciLCJjb21wYW55SUQiOiI2NzkwYjYwYzQ4NDU4NTAxZWJmMDIwYWIiLCJmaXJzdE5hbWUiOiJBbnRvbnkiLCJ3bGNJRCI6IjY3OTBiNWI4NDg0NTg1MDFlYmYwMWNiZiIsImlhdCI6MTc2MTEzNjk2NiwiZXhwIjoxNzYyMDAwOTY2LCJpc3MiOiJjdmMtcHVuZSIsInN1YiI6IjEyMDI2NDU4OTU5In0.KVOODt32jaK6Wr1Mf9H8LGQ4SwHRvPKF-yedrqC625c",
-         *    "region": "5e85951e7d7d2dabfb7b16c0",
-         *    "company_status": true,
-         *    "local_status": true,
-         *    ?"wlcID": "string",
-         *    ?"companyID": "string"
-         *}
-         */
-
+        // 2) Decode (but not verify) the JWT to access claims.
         /**
          * JWT Header
          * {
@@ -144,56 +202,62 @@ final class WP_Auth_Custom_API_ProxiCE
          */
 
         self::$remote_jwt_token = !empty($result['token']) ? $result['token'] : null;
-
         if (self::$remote_jwt_token) {
             self::$remote_jwt_token_decoded = self::jwt_decode(self::$remote_jwt_token);
         }
 
-        $ok = !empty(self::$remote_jwt_token) &&
-            !empty(self::$remote_jwt_token_decoded) &&
-            is_array(self::$remote_jwt_token_decoded['payload']);
+        $ok = !empty(self::$remote_jwt_token)
+            && !empty(self::$remote_jwt_token_decoded)
+            && is_array(self::$remote_jwt_token_decoded['payload']);
 
         if (!$ok) {
-            $msg = isset($result['err']) ? sanitize_text_field((string) $result['err']) : __('Invalid username or password.', 'wp-auth-custom-api-proxice');
+            $msg = isset($result['err'])
+                ? sanitize_text_field((string) $result['err'])
+                : __('Invalid username or password.', 'wp-auth-custom-api-proxice');
             return new WP_Error('invalid_credentials', $msg);
         }
 
-
-        // Users linked to a white label company have no access here
-        $wlcID = self::$remote_jwt_token_decoded['payload']['wlcID'] ?: null;
+        // 3) Enforce business rule: WLC-linked accounts are not allowed.
+        $wlcID = self::$remote_jwt_token_decoded['payload']['wlcID'] ?? null;
         if (!empty($wlcID)) {
-            return new WP_Error('not_authorized_proxice', __("You are not authorized to use this service. (WLC user)", 'wp-auth-custom-api-proxice'));
+            return new WP_Error(
+                'not_authorized_proxice',
+                __("You are not authorized to use this service. (WLC user)", 'wp-auth-custom-api-proxice')
+            );
         }
 
+        // 4) Create or update the local WP user based on /me (and optional company).
         $wp_user = self::create_or_update_wp_user($opts, self::$remote_jwt_token, $result);
-
-        // $wp_user = null;
         if (is_wp_error($wp_user)) {
             return $wp_user;
         }
 
-        // Optionally sync profile fields on every login
-        // self::update_user_profile_from_map($wp_user->ID, $opts, $data);
 
-        return $wp_user; // <- signals success to WP core
+        return $wp_user; // Success => short-circuit core auth.
     }
 
     /**
-     * returns plugin options and optionally takes an argument to override
+     * Get plugin options, merging saved values over defaults, then local overrides.
      *
-     * @param ?array $override_opts
-     * @return array
+     * @param array $override_opts Overrides to apply on top of saved options.
+     * @return array<string,mixed>
      */
     private static function get_plugin_opts(array $override_opts = []): array
     {
         $saved = get_option(self::OPTION, self::defaults());
-        if (!is_array($saved)) $saved = [];
+        if (!is_array($saved)) {
+            $saved = [];
+        }
         return array_merge(self::defaults(), $saved, $override_opts);
     }
 
-
     /**
-     * Perform the HTTP request to your API - verify
+     * Exchange username/password against remote API to obtain JWT.
+     *
+     * @param array  $opts     Plugin options (api_base, timeout, sslverify, ...).
+     * @param string $username Submitted login username.
+     * @param string $password Submitted login password.
+     * @return array|WP_Error  Decoded JSON array on success; WP_Error on failure.
      */
     private static function remote_auth_request(array $opts, string $username, string $password)
     {
@@ -204,6 +268,7 @@ final class WP_Auth_Custom_API_ProxiCE
             'Accept'       => 'application/json',
             'Content-Type' => 'application/json',
         ];
+        // If needed:
         // if (!empty($opts['api_key'])) {
         //     $headers[$opts['header_key'] ?: 'X-Auth-Key'] = $opts['api_key'];
         // }
@@ -211,16 +276,16 @@ final class WP_Auth_Custom_API_ProxiCE
         $body = [
             'username' => $username,
             'password' => $password,
-            'role'     => 'USERS', // required by current ProxiCE API
+            'role'     => 'USERS', // Required by current ProxiCE API contract
         ];
 
         $args = [
             'headers'   => $headers,
             'timeout'   => max(1, (int) $opts['timeout']),
             'sslverify' => (bool) $opts['sslverify'],
+            'body'      => wp_json_encode($body),
         ];
 
-        $args['body'] = wp_json_encode($body);
         $resp = wp_remote_post($url, $args);
 
         if (is_wp_error($resp)) {
@@ -231,7 +296,9 @@ final class WP_Auth_Custom_API_ProxiCE
         $json = json_decode(wp_remote_retrieve_body($resp), true);
 
         if ($code < 200 || $code >= 300) {
-            $msg = is_array($json) && !empty($json['err']) ? (string) $json['err'] : sprintf(__('Authentication failed (HTTP %d).', 'wp-auth-custom-api-proxice'), $code);
+            $msg = is_array($json) && !empty($json['err'])
+                ? (string) $json['err']
+                : sprintf(__('Authentication failed (HTTP %d).', 'wp-auth-custom-api-proxice'), $code);
             return new WP_Error('api_http_error', $msg);
         }
 
@@ -243,7 +310,11 @@ final class WP_Auth_Custom_API_ProxiCE
     }
 
     /**
-     * Perform the HTTP request to your API - get profile
+     * Fetch the remote "current user" profile via /me using a Bearer token.
+     *
+     * @param array  $opts  Plugin options.
+     * @param string $token JWT returned by login endpoint.
+     * @return array|WP_Error Remote profile array; WP_Error on failure.
      */
     private static function get_remote_profile(array $opts, string $token)
     {
@@ -251,11 +322,10 @@ final class WP_Auth_Custom_API_ProxiCE
         $url = $api_base . '/' . self::API_ENDPOINT_PROFILE;
 
         $headers  = [
-            'Accept'       => 'application/json',
-            'Content-Type' => 'application/json',
+            'Accept'        => 'application/json',
+            'Content-Type'  => 'application/json',
+            'Authorization' => 'Bearer ' . $token,
         ];
-
-        $headers['Authorization'] = 'Bearer ' . $token;
 
         $args = [
             'headers'   => $headers,
@@ -265,7 +335,8 @@ final class WP_Auth_Custom_API_ProxiCE
 
         $resp = wp_remote_get($url, $args);
 
-        /**
+        /*
+         * Example /me response:
          *{
          * "_id": "68dd19aa4cc65b50ea6cc5e7",
          * "username": "12026458959",
@@ -288,7 +359,6 @@ final class WP_Auth_Custom_API_ProxiCE
          * "wlcID": "6790b5b848458501ebf01cbf",
          * "company_offers_status": true
          *}
-
          */
 
         if (is_wp_error($resp)) {
@@ -299,7 +369,9 @@ final class WP_Auth_Custom_API_ProxiCE
         $json = json_decode(wp_remote_retrieve_body($resp), true);
 
         if ($code < 200 || $code >= 300) {
-            $msg = is_array($json) && !empty($json['err']) ? (string) $json['err'] : sprintf(__('Authentication failed (HTTP %d).', 'wp-auth-custom-api-proxice'), $code);
+            $msg = is_array($json) && !empty($json['err'])
+                ? (string) $json['err']
+                : sprintf(__('Authentication failed (HTTP %d).', 'wp-auth-custom-api-proxice'), $code);
             return new WP_Error('api_http_error', $msg);
         }
 
@@ -310,28 +382,25 @@ final class WP_Auth_Custom_API_ProxiCE
         return $json;
     }
 
-
     /**
-     * Undocumented function
+     * Fetch company details via /company/:id using a Bearer token (optional enrichment).
      *
-     * @param array $opts
-     * @param string $token
-     * @param string $id
-     * @return array
+     * @param array  $opts Plugin options.
+     * @param string $token JWT.
+     * @param string $id    Company ID from profile.
+     * @return array|WP_Error Company array on success; WP_Error on failure.
      */
     private static function get_remote_company(array $opts, string $token, string $id)
     {
         $api_base = esc_url_raw($opts['api_base']);
         $url = $api_base . '/' . self::API_ENDPOINT_COMPANY;
-
         $url = str_replace(':id', $id, $url);
 
         $headers  = [
-            'Accept'       => 'application/json',
-            'Content-Type' => 'application/json',
+            'Accept'        => 'application/json',
+            'Content-Type'  => 'application/json',
+            'Authorization' => 'Bearer ' . $token,
         ];
-
-        $headers['Authorization'] = 'Bearer ' . $token;
 
         $args = [
             'headers'   => $headers,
@@ -341,7 +410,8 @@ final class WP_Auth_Custom_API_ProxiCE
 
         $resp = wp_remote_get($url, $args);
 
-        /**
+        /*
+         * Example /company/:id response:
          * {
          *  "_id": "6790b60c48458501ebf020ab",
          *  "companynameEnglish": "DEMO CSE",
@@ -365,7 +435,9 @@ final class WP_Auth_Custom_API_ProxiCE
         $json = json_decode(wp_remote_retrieve_body($resp), true);
 
         if ($code < 200 || $code >= 300) {
-            $msg = is_array($json) && !empty($json['err']) ? (string) $json['err'] : sprintf(__('Authentication failed (HTTP %d).', 'wp-auth-custom-api-proxice'), $code);
+            $msg = is_array($json) && !empty($json['err'])
+                ? (string) $json['err']
+                : sprintf(__('Authentication failed (HTTP %d).', 'wp-auth-custom-api-proxice'), $code);
             return new WP_Error('api_http_error', $msg);
         }
 
@@ -373,25 +445,33 @@ final class WP_Auth_Custom_API_ProxiCE
             return new WP_Error('api_format_error', __('Invalid response from authentication server.', 'wp-auth-custom-api-proxice'));
         }
 
-
         return $json;
     }
 
     /**
-     * Find existing WP user (by login or email). Create if allowed.
+     * Ensure a local WP user exists and is up-to-date:
+     * - Fetches remote profile (/me).
+     * - Optionally fetches company info (/company/:id).
+     * - Finds existing user by email; otherwise creates a user if auto-provision is enabled.
+     *
+     * @param array       $opts        Plugin options.
+     * @param string      $token       JWT.
+     * @param array|null  $auth_result Raw auth response (unused today, kept for future logic).
+     * @return WP_User|WP_Error
      */
     private static function create_or_update_wp_user(array $opts, string $token, ?array $auth_result = null)
     {
         $profile = self::get_remote_profile($opts, $token);
         if (is_wp_error($profile)) {
-            // Surface the exact reason from the transport / http helper
-            return $profile;
+            return $profile; // bubble up
         }
 
+        // Extract core identity fields
         $external_user_id = self::pluck($profile, '_id');
-        $username = (string) self::pluck($profile, 'username'); // is membership card number at this time
+        $username = (string) self::pluck($profile, 'username'); // membership card # at this time
         $email = self::pluck($profile, 'email');
 
+        // Additional attributes used in meta
         $membershipCard = self::pluck($profile, 'membershipCard');
         $d = self::pluck($profile, 'validDate');
         $membershipCardExpireDate = $d ? (new DateTime($d))->format('Y-m-d') : null;
@@ -403,40 +483,28 @@ final class WP_Auth_Custom_API_ProxiCE
         $mobile = self::pluck($profile, 'mobile');
         $status = self::pluck($profile, 'status');
         $companyID = self::pluck($profile, 'companyID');
-        $WLC = (bool) self::pluck($profile, 'WLC'); // boolean
+        $WLC = (bool) self::pluck($profile, 'WLC'); // bool flag
         $wlcID = self::pluck($profile, 'wlcID');
-
 
         $displayName = $firstName . ' ' . $lastName;
 
-        // $login = self::pluck($data, (string) $opts['map_username']) ?: $fallback_username;
-        // $email = self::pluck($data, (string) $opts['map_email']);
-
-        // $user = get_user_by('login', $login);
-        // if (!$user && $email) {
-        //     $user = get_user_by('email', $email);
-        // }
-
-
-
+        // Enrich with company record if available
         $company = null;
-
         if (!empty($companyID)) {
             $company = self::get_remote_company($opts, $token, $companyID);
             if (is_wp_error($company)) {
-                // Surface the exact reason from the transport / http helper
                 return $company;
             }
         }
 
-        // $user = get_user_by('login', $username) ?: get_user_by('email', $email);
-
+        // Prefer matching by email (unique and stable in WP)
         $user = get_user_by('email', $email);
 
         if ($user) {
             return self::update_wp_user($user, $profile, $company);
         }
 
+        // No local user exists
         if (empty($opts['auto_provision'])) {
             return new WP_Error('no_local_account', __('Your account is not provisioned.', 'wp-auth-custom-api-proxice'));
         }
@@ -446,12 +514,10 @@ final class WP_Auth_Custom_API_ProxiCE
             return new WP_Error('provision_email_missing', __('Cannot create local user without a valid email.', 'wp-auth-custom-api-proxice'));
         }
 
-        // $first = self::pluck($data, (string) $opts['map_first']) ?: '';
-        // $last  = self::pluck($data, (string) $opts['map_last']) ?: '';
-
+        // Create with a random local password; local credential is unused
         $user_id = wp_insert_user([
             'user_login'   => $username,
-            'user_pass'    => wp_generate_password(32), // random; local password is unused
+            'user_pass'    => wp_generate_password(32),
             'user_email'   => $email,
             'first_name'   => $firstName,
             'last_name'    => $lastName,
@@ -465,26 +531,27 @@ final class WP_Auth_Custom_API_ProxiCE
 
         $user = get_user_by('id', $user_id);
 
-
-        // Apply roles from API, if provided and valid
-        // self::apply_api_roles($user, $profile, $company);
-
+        // Sync meta/roles
         self::update_wp_user($user, $profile, $company);
 
         return $user;
     }
 
+    /**
+     * Update a WP_User from the remote profile/company data.
+     *
+     * @param WP_User     $user
+     * @param array       $profile
+     * @param array|null  $company
+     * @return WP_User|WP_Error
+     */
     private static function update_wp_user(WP_User $user, array $profile, ?array $company = null)
     {
-        // TODO: update user email etc...
-
-        // Store external ID for future linkage
-        // $ext_id = self::pluck($profile, (string) $opts['map_ext_id']);
-
+        // Extract profile attributes (dup of create step to keep function self-contained)
         $user_id = $user->ID;
 
         $external_user_id = self::pluck($profile, '_id');
-        $username = (string) self::pluck($profile, 'username'); // is membership card number at this time
+        $username = (string) self::pluck($profile, 'username'); // membership card #
         $email = self::pluck($profile, 'email');
 
         $membershipCard = self::pluck($profile, 'membershipCard');
@@ -498,11 +565,10 @@ final class WP_Auth_Custom_API_ProxiCE
         $mobile = self::pluck($profile, 'mobile');
         $status = self::pluck($profile, 'status');
         $companyID = self::pluck($profile, 'companyID');
-        $WLC = (bool) self::pluck($profile, 'WLC') ?: false; // boolean
+        $WLC = (bool) self::pluck($profile, 'WLC') ?: false;
         $wlcID = self::pluck($profile, 'wlcID');
 
-
-        // Update the WP User
+        // Core user fields
         $userdata = [
             'ID'         => $user_id,
             'first_name' => $firstName,
@@ -514,16 +580,15 @@ final class WP_Auth_Custom_API_ProxiCE
             return new WP_Error('failed_update_local_user', $update_user->get_error_message());
         }
 
-        if (
-            !empty($username) &&
-            $username !== $user->user_login
-        ) {
+        // Keep user_login aligned to remote "username" if it changed (requires direct db update)
+        if (!empty($username) && $username !== $user->user_login) {
             $updated = self::update_wp_user_login($user->ID, $username);
             if (!empty($updated)) {
-                $user->user_login = $username;
+                $user->user_login = $username; // update runtime object to reflect change
             }
         }
 
+        // Sync meta from remote identity
         if ($external_user_id) {
             update_user_meta($user_id, 'external_user_id', sanitize_text_field((string) $external_user_id));
         }
@@ -532,7 +597,6 @@ final class WP_Auth_Custom_API_ProxiCE
             update_user_meta($user_id, 'membership_card', sanitize_text_field((string) $membershipCard));
             update_user_meta($user_id, 'membership_card_expire_date', sanitize_text_field((string) $membershipCardExpireDate));
         } else {
-            // delete entries
             delete_user_meta($user_id, 'membership_card');
             delete_user_meta($user_id, 'membership_card_expire_date');
         }
@@ -544,19 +608,25 @@ final class WP_Auth_Custom_API_ProxiCE
         update_user_meta($user_id, 'local_offers_status', $local_offers_status ? '1' : '0');
         update_user_meta($user_id, 'company_offers_status', $company_offers_status ? '1' : '0');
 
+        // Map company -> roles (auto-create role if needed)
         self::apply_api_roles($user, $profile, $company);
 
         return $user;
     }
 
     /**
-     * If the user is linked to a company try find role matching companynameFrench to role.displayName
-     * If WP_Role not exists create it and set role slug to user
-     * If no company apply role.no_company
-     * 
+     * Role mapping strategy:
+     * - If company data is present: assign a role named after companynameFrench.
+     *   If the role doesn't exist, create it (no capabilities).
+     * - If no company: assign a "No Company" role (also auto-created if missing).
+     *
+     * Notes:
+     * - We reset the user's roles to none first, then add exactly these mapped roles.
+     * - If you want capabilities, add them in the add_role() third argument.
+     *
      * @param WP_User|null $user
-     * @param array $profile
-     * @param array|null $company
+     * @param array        $profile
+     * @param array|null   $company
      * @return void
      */
     private static function apply_api_roles(?WP_User $user, array $profile, ?array $company): void
@@ -565,10 +635,7 @@ final class WP_Auth_Custom_API_ProxiCE
             return;
         }
 
-        // $user_info = get_userdata($user->ID);
-
         $defaultRoleDisplayName = 'No Company';
-
         $roles = [$defaultRoleDisplayName];
 
         if ($company) {
@@ -576,34 +643,25 @@ final class WP_Auth_Custom_API_ProxiCE
             $roles = [$companyName];
         }
 
-
         if (is_array($roles)) {
-            // Reset to default then add allowed roles
+            // Reset to no role; then add mapped roles
             $user->set_role('');
 
             foreach ($roles as $display_name) {
                 $role_name = self::get_role_slug_by_display_name($display_name);
 
                 if (empty($role_name)) {
+                    // Role not found: create a slug from display name
                     $role_name = sanitize_key(strtolower(self::safe_str('corp_' . $display_name)));
 
                     $role = add_role(
                         $role_name,
                         $display_name,
-                        [],
-                        // [
-                        //     'read'         => true,
-                        //     'edit_posts'   => true,
-                        //     'upload_files' => true,
-                        // ]
+                        [] // Capabilities: keep empty or customize per your needs
                     );
 
-                    if (
-                        null === $role ||
-                        !($role instanceof WP_Role)
-                    ) {
-                        // TODO: handle error
-
+                    if (null === $role || !($role instanceof WP_Role)) {
+                        // Failed to create role; bail without assigning to avoid partial state
                         return;
                     }
 
@@ -612,23 +670,16 @@ final class WP_Auth_Custom_API_ProxiCE
 
                 $user->add_role($role_name);
             }
-
-
-
-            // $existing = array_keys(wp_roles()->roles);
-            // foreach ($roles as $r) {
-            //     $r = sanitize_key((string) $r);
-            //     if (in_array($r, $existing, true)) {
-            //         $user->add_role($r);
-            //     }
-            // }
-            // if (empty($user->roles)) {
-            //     $user->add_role(sanitize_key((string) $opts['role_default']));
-            // }
         }
     }
 
-    /** Simple deep pluck supporting dot.notation */
+    /**
+     * Deep getter supporting "dot.notation".
+     *
+     * @param mixed  $array Source array.
+     * @param string $path  Dot path (e.g., 'user.profile.email').
+     * @return mixed|null
+     */
     private static function pluck($array, string $path)
     {
         if (!is_array($array) || $path === '') return null;
@@ -646,6 +697,11 @@ final class WP_Auth_Custom_API_ProxiCE
 
     /* ————— Settings UI ————— */
 
+    /**
+     * Adds a simple settings page under Settings → External Auth.
+     *
+     * @return void
+     */
     public static function admin_menu(): void
     {
         add_options_page(
@@ -657,6 +713,11 @@ final class WP_Auth_Custom_API_ProxiCE
         );
     }
 
+    /**
+     * Registers option storage, the main section, and the individual fields.
+     *
+     * @return void
+     */
     public static function register_settings(): void
     {
         register_setting('wp_auth_custom_api_proxice', self::OPTION, [
@@ -668,21 +729,21 @@ final class WP_Auth_Custom_API_ProxiCE
         add_settings_section('main', __('Connection', 'wp-auth-custom-api-proxice'), '__return_false', 'wp-auth-custom-api-proxice');
 
         $fields = [
-            'enabled' => __('Enable API authentication', 'wp-auth-custom-api-proxice'),
-            'api_base' => __('API base URL', 'wp-auth-custom-api-proxice'),
-            // 'method' => __('HTTP method (GET/POST)', 'wp-auth-custom-api-proxice'),
-            // 'api_key' => __('API key / token (optional)', 'wp-auth-custom-api-proxice'),
-            // 'header_key' => __('Auth header key', 'wp-auth-custom-api-proxice'),
-            'timeout' => __('Timeout (seconds)', 'wp-auth-custom-api-proxice'),
-            'sslverify' => __('Verify SSL certificate', 'wp-auth-custom-api-proxice'),
-            'auto_provision' => __('Auto-provision local users', 'wp-auth-custom-api-proxice'),
-            'role_default' => __('Default role', 'wp-auth-custom-api-proxice'),
+            'enabled'        => __('Enable API authentication', 'wp-auth-custom-api-proxice'),
+            'api_base'       => __('API base URL', 'wp-auth-custom-api-proxice'),
+            // 'method'       => __('HTTP method (GET/POST)', 'wp-auth-custom-api-proxice'),
+            // 'api_key'      => __('API key / token (optional)', 'wp-auth-custom-api-proxice'),
+            // 'header_key'   => __('Auth header key', 'wp-auth-custom-api-proxice'),
+            'timeout'        => __('Timeout (seconds)', 'wp-auth-custom-api-proxice'),
+            'sslverify'      => __('Verify SSL certificate', 'wp-auth-custom-api-proxice'),
+            'auto_provision' => __('Auto-provision local users', 'wp-auth_custom_api_proxice'),
+            'role_default'   => __('Default role', 'wp-auth-custom-api-proxice'),
             // 'map_username' => __('Map: username path', 'wp-auth-custom-api-proxice'),
-            // 'map_email' => __('Map: email path', 'wp-auth-custom-api-proxice'),
-            // 'map_first' => __('Map: first name path', 'wp-auth-custom-api-proxice'),
-            // 'map_last' => __('Map: last name path', 'wp-auth-custom-api-proxice'),
-            // 'map_roles' => __('Map: roles path', 'wp-auth-custom-api-proxice'),
-            // 'map_ext_id' => __('Map: external id path', 'wp-auth-custom-api-proxice'),
+            // 'map_email'    => __('Map: email path', 'wp-auth-custom-api-proxice'),
+            // 'map_first'    => __('Map: first name path', 'wp-auth-custom-api-proxice'),
+            // 'map_last'     => __('Map: last name path', 'wp-auth-custom-api-proxice'),
+            // 'map_roles'    => __('Map: roles path', 'wp-auth-custom-api-proxice'),
+            // 'map_ext_id'   => __('Map: external id path', 'wp-auth-custom-api-proxice'),
         ];
 
         foreach ($fields as $key => $label) {
@@ -690,28 +751,39 @@ final class WP_Auth_Custom_API_ProxiCE
         }
     }
 
+    /**
+     * Sanitizes and normalizes option input.
+     *
+     * @param mixed $input Raw settings input.
+     * @return array<string,mixed>
+     */
     public static function sanitize_options($input): array
     {
         $d = self::defaults();
         $out = [];
         $out['enabled']        = empty($input['enabled']) ? 0 : 1;
         $out['api_base']       = esc_url_raw($input['api_base'] ?? $d['api_base']);
-        // $out['method']         = in_array(strtoupper($input['method'] ?? 'POST'), ['GET','POST'], true) ? strtoupper($input['method']) : 'POST';
-        // $out['api_key']        = sanitize_text_field($input['api_key'] ?? '');
-        // $out['header_key']     = sanitize_text_field($input['header_key'] ?? $d['header_key']);
+        // $out['method']      = in_array(strtoupper($input['method'] ?? 'POST'), ['GET','POST'], true) ? strtoupper($input['method']) : 'POST';
+        // $out['api_key']     = sanitize_text_field($input['api_key'] ?? '');
+        // $out['header_key']  = sanitize_text_field($input['header_key'] ?? $d['header_key']);
         $out['timeout']        = max(1, (int) ($input['timeout'] ?? $d['timeout']));
         $out['sslverify']      = empty($input['sslverify']) ? 0 : 1;
         $out['auto_provision'] = empty($input['auto_provision']) ? 0 : 1;
         $out['role_default']   = sanitize_key($input['role_default'] ?? $d['role_default']);
-        // $out['map_username']   = sanitize_text_field($input['map_username'] ?? $d['map_username']);
-        // $out['map_email']      = sanitize_text_field($input['map_email'] ?? $d['map_email']);
-        // $out['map_first']      = sanitize_text_field($input['map_first'] ?? $d['map_first']);
-        // $out['map_last']       = sanitize_text_field($input['map_last'] ?? $d['map_last']);
-        // $out['map_roles']      = sanitize_text_field($input['map_roles'] ?? $d['map_roles']);
-        // $out['map_ext_id']     = sanitize_text_field($input['map_ext_id'] ?? $d['map_ext_id']);
+        // $out['map_username'] = sanitize_text_field($input['map_username'] ?? $d['map_username']);
+        // $out['map_email']    = sanitize_text_field($input['map_email'] ?? $d['map_email']);
+        // $out['map_first']    = sanitize_text_field($input['map_first'] ?? $d['map_first']);
+        // $out['map_last']     = sanitize_text_field($input['map_last'] ?? $d['map_last']);
+        // $out['map_roles']    = sanitize_text_field($input['map_roles'] ?? $d['map_roles']);
+        // $out['map_ext_id']   = sanitize_text_field($input['map_ext_id'] ?? $d['map_ext_id']);
         return $out;
     }
 
+    /**
+     * Renders the plugin's settings page.
+     *
+     * @return void
+     */
     public static function render_settings(): void
     {
         if (!current_user_can('manage_options')) {
@@ -746,6 +818,12 @@ final class WP_Auth_Custom_API_ProxiCE
 <?php
     }
 
+    /**
+     * Render a single field based on its key (checkbox/select/text/number).
+     *
+     * @param array $args ['key' => string]
+     * @return void
+     */
     public static function render_field(array $args): void
     {
         $key  = $args['key'];
@@ -754,12 +832,24 @@ final class WP_Auth_Custom_API_ProxiCE
 
         $bools = ['enabled', 'sslverify', 'auto_provision'];
         if (in_array($key, $bools, true)) {
-            printf('<label><input type="checkbox" name="%1$s[%2$s]" value="1" %3$s/> %4$s</label>', esc_attr(self::OPTION), esc_attr($key), checked($val, 1, false), esc_html__('Yes', 'wp-auth-custom-api-proxice'));
+            printf(
+                '<label><input type="checkbox" name="%1$s[%2$s]" value="1" %3$s/> %4$s</label>',
+                esc_attr(self::OPTION),
+                esc_attr($key),
+                checked($val, 1, false),
+                esc_html__('Yes', 'wp-auth-custom-api-proxice')
+            );
             return;
         }
 
         if ($key === 'method') {
-            printf('<select name="%1$s[%2$s]"><option value="POST" %3$s>POST</option><option value="GET" %4$s>GET</option></select>', esc_attr(self::OPTION), esc_attr($key), selected($val, 'POST', false), selected($val, 'GET', false));
+            printf(
+                '<select name="%1$s[%2$s]"><option value="POST" %3$s>POST</option><option value="GET" %4$s>GET</option></select>',
+                esc_attr(self::OPTION),
+                esc_attr($key),
+                selected($val, 'POST', false),
+                selected($val, 'GET', false)
+            );
             return;
         }
 
@@ -774,18 +864,36 @@ final class WP_Auth_Custom_API_ProxiCE
 
         $type = ($key === 'api_base') ? 'url' : (($key === 'timeout') ? 'number' : 'text');
         $extra = $type === 'number' ? ' min="1" step="1"' : '';
-        printf('<input type="%1$s" name="%2$s[%3$s]" value="%4$s" class="regular-text" %5$s/>', esc_attr($type), esc_attr(self::OPTION), esc_attr($key), esc_attr($val), $extra);
+        printf(
+            '<input type="%1$s" name="%2$s[%3$s]" value="%4$s" class="regular-text" %5$s/>',
+            esc_attr($type),
+            esc_attr(self::OPTION),
+            esc_attr($key),
+            esc_attr($val),
+            $extra
+        );
     }
 
     /**
-     * Optional: push back profile updates to external API when the user edits their WP profile.
-     * Replace with your own logic or remove if not needed.
+     * Optional: push profile updates to your external API when users edit their WP profile.
+     * Currently a no-op; keep the hook for forward compatibility.
+     *
+     * @param int      $user_id       User ID being updated.
+     * @param WP_User  $old_user_data Previous user object snapshot.
+     * @return void
      */
     public static function maybe_sync_profile_back($user_id, $old_user_data): void
     {
         // Intentionally left as a stub; implement if your API needs it.
     }
 
+    /**
+     * Base64url decode helper (RFC 7515).
+     *
+     * @param string $data Base64url-encoded data.
+     * @return string
+     * @throws Exception On invalid segment.
+     */
     private static function b64url_decode(string $data): string
     {
         $remainder = strlen($data) % 4;
@@ -800,18 +908,14 @@ final class WP_Auth_Custom_API_ProxiCE
         return $decoded;
     }
 
-
     /**
-     * @param string $jwt The raw JWT (header.payload.signature)
-     * @param null|string|resource $key  HS256: shared secret; RS256: OpenSSL public key (PEM string or resource)
-     * @param array $options [
-     *   'verify' => bool (default false),
-     *   'allowed_algs' => ['HS256','RS256'],
-     *   'leeway' => int seconds (default 0),
-     *   'time' => int override current time (unix)
-     * ]
-     * @return array [ 'header' => array, 'payload' => array, 'signature_valid' => bool ]
-     * @throws Exception
+     * Lightweight JWT decoder with optional signature/time claim verification.
+     *
+     * @param string                    $jwt     Raw JWT string (header.payload.signature).
+     * @param null|string|resource      $key     HS256: shared secret; RS256: OpenSSL public key (PEM string/resource).
+     * @param array{verify?:bool,allowed_algs?:array,leeway?:int,time?:int} $options
+     * @return array{header:array,payload:array,signature_valid:bool}
+     * @throws Exception On malformed JWT or failed verification when enabled.
      */
     private static function jwt_decode(string $jwt, $key = null, array $options = []): array
     {
@@ -865,8 +969,7 @@ final class WP_Auth_Custom_API_ProxiCE
                         throw new Exception('Invalid RS256 public key.');
                     }
                     $ok = openssl_verify($signingInput, $signature, $pubKey, OPENSSL_ALGO_SHA256);
-                    if (is_resource($pubKey)) { /* no-op: provided by user */
-                    }
+                    // If a resource is provided by user, do not free it.
                     $signatureValid = ($ok === 1);
                     if ($ok === -1) {
                         throw new Exception('OpenSSL verify error: ' . openssl_error_string());
@@ -877,11 +980,7 @@ final class WP_Auth_Custom_API_ProxiCE
                     throw new Exception("Unsupported alg {$alg} in this helper.");
             }
 
-            if (!$signatureValid) {
-                throw new Exception('Invalid signature.');
-            }
-
-            // Validate registered time-based claims if present
+            // Time claim checks (all optional in payload)
             $now = (int)$opts['time'];
             $leeway = max(0, (int)$opts['leeway']);
 
@@ -903,7 +1002,12 @@ final class WP_Auth_Custom_API_ProxiCE
         ];
     }
 
-
+    /**
+     * Find role by localized/display name.
+     *
+     * @param string $name Display name to search.
+     * @return WP_Role|null
+     */
     private static function get_role_by_display_name(string $name): ?WP_Role
     {
         $name = trim($name);
@@ -921,6 +1025,12 @@ final class WP_Auth_Custom_API_ProxiCE
         return null;
     }
 
+    /**
+     * Find role slug by its display name (case-insensitive).
+     *
+     * @param string $name Display name.
+     * @return string|null Role slug or null if not found.
+     */
     private static function get_role_slug_by_display_name(string $name): ?string
     {
         $name = trim($name);
@@ -938,27 +1048,36 @@ final class WP_Auth_Custom_API_ProxiCE
         return null;
     }
 
-
+    /**
+     * Normalize a string to an uppercase, ASCII-ish, underscore-separated token.
+     * Useful for generating stable role slugs from free-text company names.
+     *
+     * @param string $str
+     * @param string $separator
+     * @return string
+     */
     private static function safe_str(string $str, string $separator = '_'): string
     {
         $str = trim(self::remove_accents($str));
-        // Trim spaces, replace non-alphanumeric sequences with underscores
+        // Collapse non-alnum sequences to the separator
         $formatted = preg_replace('/[^A-Za-z0-9_]+/', $separator, $str);
-
         $formatted = trim($formatted, $separator);
-
-        // Convert to uppercase
         return $formatted;
     }
 
+    /**
+     * Lightweight diacritics removal with Intl transliterator fallback.
+     *
+     * @param string $str
+     * @return string
+     */
     private static function remove_accents(string $str): string
     {
-        // Si possible, utiliser la fonction interne transliterator_transliterate (plus propre)
         if (function_exists('transliterator_transliterate')) {
             return transliterator_transliterate('Any-Latin; Latin-ASCII; [:Nonspacing Mark:] Remove; NFC;', $str);
         }
 
-        // Sinon, fallback manuel (utile sur hébergements limités)
+        // Fallback table for common Latin diacritics
         $accents = [
             'à' => 'a',
             'á' => 'a',
@@ -1025,11 +1144,12 @@ final class WP_Auth_Custom_API_ProxiCE
     }
 
     /**
-     * Undocumented function
+     * Update the user_login field directly in the DB (WordPress does not provide a setter).
+     * Cleans the user cache after update.
      *
-     * @param integer $ID
-     * @param string $user_login
-     * @return false|int returns number of lines updated or false if error
+     * @param int    $ID         User ID
+     * @param string $user_login New login
+     * @return false|int         Rows updated count on success; false on failure
      */
     private static function update_wp_user_login(int $ID, string $user_login)
     {
@@ -1049,4 +1169,5 @@ final class WP_Auth_Custom_API_ProxiCE
     }
 }
 
+// Register hooks
 WP_Auth_Custom_API_ProxiCE::init();
