@@ -8,6 +8,7 @@
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Text Domain: wp-auth-custom-api-proxice
+ * Domain Path: /languages
  * License: GPL-2.0-or-later
  *
  * @package WP_Auth_Custom_API_ProxiCE
@@ -292,10 +293,10 @@ final class WP_Auth_Custom_API_ProxiCE
         if ($code < 200 || $code >= 300) {
             $msg = is_array($json) && !empty($json['err'])
                 ? (string) $json['err']
+                /* translators: HTTP Status Code (ex: 200 403) */
                 : sprintf(__('Authentication failed (HTTP %d).', 'wp-auth-custom-api-proxice'), $code);
             return new WP_Error('api_http_error', $msg);
         }
-
         if (!is_array($json)) {
             return new WP_Error('api_format_error', __('Invalid response from authentication server.', 'wp-auth-custom-api-proxice'));
         }
@@ -336,8 +337,8 @@ final class WP_Auth_Custom_API_ProxiCE
          * "username": "12026458959",
          * "firstName": "Antony",
          * "lastName": "GIBBS",
-         * "email": "cantoute+proxice.corp@gmail.com",
-         * "mobile": "619117419",
+         * "email": "xxxx+proxice.corp@xxxxx.com",
+         * "mobile": "123456789",
          * "role": "USERS",
          * "isVerified": true,
          * "status": true,
