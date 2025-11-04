@@ -32,6 +32,8 @@ if (!defined('ABSPATH')) {
 // error_reporting(E_ALL);
 // ini_set('display_errors', 1);
 
+// cspell:ignore ProxiCE wlcID pune XVCJ Efxdz Nwcb algs zyxi jdoe
+
 final class WP_Auth_Custom_API_ProxiCE
 {
     /** @var string Option name storing plugin settings */
@@ -497,8 +499,14 @@ final class WP_Auth_Custom_API_ProxiCE
             }
         }
 
-        // Prefer matching by email (unique and stable in WP)
-        $user = get_user_by('email', $email);
+        // Prefer matching by login
+        $user = get_user_by('login', $username);
+
+        if (false === $user) {
+            // At registration on WP the login does not match the membership card yet
+            // grab the user by it's email
+            $user = get_user_by('email', $email);
+        }
 
         if ($user) {
             return self::update_wp_user($user, $profile, $company);
@@ -582,8 +590,8 @@ final class WP_Auth_Custom_API_ProxiCE
 
         // Keep user_login aligned to remote "username" if it changed (requires direct db update)
         if (!empty($username) && $username !== $user->user_login) {
-            $updated = self::update_wp_user_login($user->ID, $username);
-            if (!empty($updated)) {
+            $updated_login = self::update_wp_user_login($user->ID, $username);
+            if (!empty($updated_login)) {
                 $user->user_login = $username; // update runtime object to reflect change
             }
         }
