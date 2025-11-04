@@ -7,6 +7,7 @@
  * Author: Antony GIBBS <antony@cantoute.com>
  * Requires at least: 5.8
  * Requires PHP: 7.4
+ * Text Domain: wp-auth-custom-api-proxice
  * License: GPL-2.0-or-later
  *
  * @package WP_Auth_Custom_API_ProxiCE
