@@ -54,7 +54,7 @@ final class WP_Auth_Custom_API_ProxiCE
     const API_ENDPOINT_COMPANY = 'company/:id';
 
     /** @var WP_User|null Locally authenticated user (if any). If admin/whitelisted, we defer to WP. */
-    private static ?WP_User $auth_local_user = null;
+    private static ?WP_User $local_auth_user = null;
 
     /** @var string|null Raw JWT returned by the remote authentication endpoint */
     private static ?string $remote_jwt_token = null;
@@ -66,7 +66,7 @@ final class WP_Auth_Custom_API_ProxiCE
     private static ?array $remote_jwt_token_decoded = null;
 
     /** @var array|null Cached raw response of a successful authenticate_via_api call */
-    private static ?array $authenticate_via_api_response = null;
+    private static ?array $remote_login_response = null;
 
     /**
      * Bootstraps plugin hooks.
@@ -123,7 +123,7 @@ final class WP_Auth_Custom_API_ProxiCE
         // If a previous handler already produced a WP_User (e.g., local password auth),
         // allow admins or specific whitelisted roles to pass through untouched.
         if (is_a($user, 'WP_User')) {
-            self::$auth_local_user = $user;
+            self::$local_auth_user = $user;
 
             $roles = (array) $user->roles;
             if (
@@ -156,7 +156,7 @@ final class WP_Auth_Custom_API_ProxiCE
             return $result;
         }
 
-        self::$authenticate_via_api_response = $result;
+        self::$remote_login_response = $result;
 
         /*
          * Example error (HTTP 400):
