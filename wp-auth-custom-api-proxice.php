@@ -102,6 +102,7 @@ final class WP_Auth_Custom_API_ProxiCE
             'sslverify'      => 1,     // Verify TLS certificate
             'auto_provision' => 1,     // Create local user if missing
             'role_default'   => 'subscriber', // Fallback role when mapping is not available
+            'local_auth_roles' => 'administrator,particuliers',
         ];
     }
 
@@ -120,15 +121,17 @@ final class WP_Auth_Custom_API_ProxiCE
      */
     public static function authenticate_via_api($user, string $username, string $password)
     {
+        $opts = self::get_plugin_opts();
+
+
         // If a previous handler already produced a WP_User (e.g., local password auth),
         // allow admins or specific whitelisted roles to pass through untouched.
         if (is_a($user, 'WP_User')) {
             self::$local_auth_user = $user;
 
-            $roles = (array) $user->roles;
+            $user_roles = (array) $user->roles;
             if (
-                in_array('administrator', $roles, true) ||
-                in_array('particuliers', $roles, true)
+                self::has_matching_value($user_roles, explode(',', $opts['local_auth_roles']))
             ) {
                 return $user; // trusted: don't override
             } else {
@@ -142,8 +145,6 @@ final class WP_Auth_Custom_API_ProxiCE
             return null;
         }
 
-        $opts = self::get_plugin_opts();
-
         // Disabled or misconfigured => fall back to core auth.
         if (empty($opts['enabled']) || empty($opts['api_base'])) {
             return null;
@@ -153,6 +154,19 @@ final class WP_Auth_Custom_API_ProxiCE
         $result = self::remote_auth_request($opts, $username, $password);
         if (is_wp_error($result)) {
             // Transport/HTTP/format failure surfaces to the user
+
+            // return better error messages / translatable
+            $msg = $result->get_error_message();
+            if ($msg == 'subscription') {
+                $subscription_suspended = __('Your subscription has expired. Please renew your subscription to access this service.', 'wp-auth-custom-api-proxice');
+                return new WP_Error('subscription_suspended', $subscription_suspended);
+            }
+
+            if ($msg == 'Invalid credentials.') {
+                $subscription_suspended = __('Invalid username or password.', 'wp-auth-custom-api-proxice');
+                return new WP_Error('subscription_suspended', $subscription_suspended);
+            }
+
             return $result;
         }
 
@@ -208,8 +222,9 @@ final class WP_Auth_Custom_API_ProxiCE
         if (!$ok) {
             $msg = isset($result['err'])
                 ? sanitize_text_field((string) $result['err'])
-                : __('Invalid username or password.', 'wp-auth-custom-api-proxice');
-            return new WP_Error('invalid_credentials', $msg);
+                : __('An error occurred, invalid token.', 'wp-auth-custom-api-proxice');
+
+            return new WP_Error('token_error', $msg);
         }
 
         // 3) Enforce business rule: WLC-linked accounts are not allowed.
@@ -706,8 +721,8 @@ final class WP_Auth_Custom_API_ProxiCE
     public static function admin_menu(): void
     {
         add_options_page(
-            __('External Auth', 'wp-auth-custom-api-proxice'),
-            __('External Auth', 'wp-auth-custom-api-proxice'),
+            __('External Auth (ProxiCE)', 'wp-auth-custom-api-proxice'),
+            __('External Auth (ProxiCE)', 'wp-auth-custom-api-proxice'),
             'manage_options',
             'wp-auth-custom-api-proxice',
             [__CLASS__, 'render_settings']
@@ -736,6 +751,7 @@ final class WP_Auth_Custom_API_ProxiCE
             'sslverify'      => __('Verify SSL certificate', 'wp-auth-custom-api-proxice'),
             'auto_provision' => __('Auto-provision local users', 'wp-auth_custom_api_proxice'),
             'role_default'   => __('Default role', 'wp-auth-custom-api-proxice'),
+            'local_auth_roles' => __('Local auth roles (comma separated)', 'wp-auth-custom-api-proxice'),
         ];
 
         foreach ($fields as $key => $label) {
@@ -753,6 +769,11 @@ final class WP_Auth_Custom_API_ProxiCE
     {
         $d = self::defaults();
         $out = [];
+
+        $local_auth_roles = self::sanitize_key_csv_values(
+            strtolower($input['local_auth_roles'])
+        ) ?? $d['local_auth_roles'];
+
         $out['enabled']        = empty($input['enabled']) ? 0 : 1;
         $out['api_base']       = esc_url_raw($input['api_base'] ?? $d['api_base']);
         // $out['header_key']  = sanitize_text_field($input['header_key'] ?? $d['header_key']);
@@ -760,6 +781,8 @@ final class WP_Auth_Custom_API_ProxiCE
         $out['sslverify']      = empty($input['sslverify']) ? 0 : 1;
         $out['auto_provision'] = empty($input['auto_provision']) ? 0 : 1;
         $out['role_default']   = sanitize_key($input['role_default'] ?? $d['role_default']);
+        $out['local_auth_roles'] = $local_auth_roles;
+
         return $out;
     }
 
@@ -782,8 +805,8 @@ final class WP_Auth_Custom_API_ProxiCE
                 <?php do_settings_sections('wp-auth-custom-api-proxice'); ?>
                 <?php submit_button(); ?>
             </form>
-            <hr />
-            <details>
+            <!-- <hr /> -->
+            <!-- <details>
                 <summary><strong><?php esc_html_e('Expected API response (example)', 'wp-auth-custom-api-proxice'); ?></strong></summary>
                 <pre>{
   "ok": true,
@@ -797,7 +820,7 @@ final class WP_Auth_Custom_API_ProxiCE
     "roles": ["subscriber"]
   }
 }</pre>
-            </details>
+            </details> -->
         </div>
 <?php
     }
@@ -1155,6 +1178,32 @@ final class WP_Auth_Custom_API_ProxiCE
 
 
         return $updated;
+    }
+
+    private static function sanitize_key_csv_values(string $csv, bool $removeEmpty = true): string
+    {
+        // Split the string by commas
+        $values = explode(',', $csv);
+
+        $result = [];
+
+        foreach ($values as $v) {
+            $result[] = sanitize_key($v);
+        }
+
+        // Optionally remove empty entries
+        if ($removeEmpty) {
+            $result = array_filter($result, fn($v) => $v !== '');
+        }
+
+        // Rejoin the cleaned values into a string
+        return implode(',', $result);
+    }
+
+    private static function has_matching_value(array $array1, array $array2): bool
+    {
+        // Check if there is any intersection between the two arrays
+        return count(array_intersect($array1, $array2)) > 0;
     }
 }
 
