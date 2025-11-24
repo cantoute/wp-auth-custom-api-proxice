@@ -293,9 +293,20 @@ if (!class_exists('WP_Roles')) {
     class WP_Roles
     {
         public $roles = [
-            'subscriber' => ['name' => 'Subscriber'],
-            'administrator' => ['name' => 'Administrator'],
+            'subscriber' => null,
+            'administrator' => null,
         ];
+
+        public function __construct()
+        {
+            $this->roles['subscriber'] = new WP_Role('subscriber', []);
+            $this->roles['administrator'] = new WP_Role('administrator', []);
+        }
+
+        public function get_role($role)
+        {
+            return $this->roles[$role] ?? null;
+        }
     }
 }
 if (!function_exists('wp_roles')) {
@@ -309,8 +320,8 @@ if (!function_exists('wp_roles')) {
 if (!function_exists('add_role')) {
     function add_role($role, $display_name, $capabilities = [])
     {
-        wp_roles()->roles[$role] = ['name' => $display_name, 'capabilities' => $capabilities];
-        return new WP_Role($role, $capabilities);
+        wp_roles()->roles[$role] = new WP_Role($role, $capabilities);
+        return wp_roles()->roles[$role];
     }
 }
 
