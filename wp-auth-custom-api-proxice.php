@@ -123,6 +123,20 @@ final class WP_Auth_Custom_API_ProxiCE
     {
         $opts = self::get_plugin_opts();
 
+        // No credentials? Let other auth providers handle (e.g., magic links, SSO).
+        if (empty($username) || empty($password)) {
+            return $user;
+        }
+
+        // Disabled => fall back to core auth.
+        if (empty($opts['enabled'])) {
+            return $user;
+        }
+
+        // misconfigured => throw error
+        if (empty($opts['api_base'])) {
+            return new WP_Error('misconfigured', "Remote Auth ProxiCE requires setting api_base");
+        }
 
         // If a previous handler already produced a WP_User (e.g., local password auth),
         // allow admins or specific whitelisted roles to pass through untouched.
@@ -138,16 +152,6 @@ final class WP_Auth_Custom_API_ProxiCE
                 // Not trusted: require validation against the external API
                 $user = null;
             }
-        }
-
-        // No credentials? Let other auth providers handle (e.g., magic links, SSO).
-        if (empty($username) || empty($password)) {
-            return null;
-        }
-
-        // Disabled or misconfigured => fall back to core auth.
-        if (empty($opts['enabled']) || empty($opts['api_base'])) {
-            return null;
         }
 
         // 1) Exchange credentials for JWT
