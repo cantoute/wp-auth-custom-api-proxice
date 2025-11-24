@@ -9,7 +9,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2025-11-17T21:20:26+01:00\n"
+"POT-Creation-Date: 2025-11-24T20:12:25+01:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.12.0\n"
 "X-Domain: wp-auth-custom-api-proxice\n"
@@ -29,94 +29,94 @@ msgstr ""
 msgid "Antony GIBBS <antony@cantoute.com>"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:161
+#: wp-auth-custom-api-proxice.php:165
 msgid "Your subscription has expired. Please renew your subscription to access this service."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:166
+#: wp-auth-custom-api-proxice.php:170
 msgid "Invalid username or password."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:225
+#: wp-auth-custom-api-proxice.php:229
 msgid "An error occurred, invalid token."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:235
+#: wp-auth-custom-api-proxice.php:239
 msgid "You are not authorized to use this service. (WLC user)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:302
+#: wp-auth-custom-api-proxice.php:306
 msgid "Authentication server unreachable."
 msgstr ""
 
 #. translators: HTTP Status Code (ex: 200 403)
-#: wp-auth-custom-api-proxice.php:312
-#: wp-auth-custom-api-proxice.php:384
-#: wp-auth-custom-api-proxice.php:450
+#: wp-auth-custom-api-proxice.php:316
+#: wp-auth-custom-api-proxice.php:388
+#: wp-auth-custom-api-proxice.php:454
 #, php-format
 msgid "Authentication failed (HTTP %d)."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:316
-#: wp-auth-custom-api-proxice.php:389
-#: wp-auth-custom-api-proxice.php:455
+#: wp-auth-custom-api-proxice.php:320
+#: wp-auth-custom-api-proxice.php:393
+#: wp-auth-custom-api-proxice.php:459
 msgid "Invalid response from authentication server."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:375
-#: wp-auth-custom-api-proxice.php:441
+#: wp-auth-custom-api-proxice.php:379
+#: wp-auth-custom-api-proxice.php:445
 msgid "Failed to fetch user profile from API."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:525
+#: wp-auth-custom-api-proxice.php:529
 msgid "Your account is not provisioned."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:530
+#: wp-auth-custom-api-proxice.php:534
 msgid "Cannot create local user without a valid email."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:724
-#: wp-auth-custom-api-proxice.php:725
+#: wp-auth-custom-api-proxice.php:728
+#: wp-auth-custom-api-proxice.php:729
 msgid "External Auth (ProxiCE)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:745
+#: wp-auth-custom-api-proxice.php:749
 msgid "Connection"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:748
+#: wp-auth-custom-api-proxice.php:752
 msgid "Enable API authentication"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:749
+#: wp-auth-custom-api-proxice.php:753
 msgid "API base URL"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:750
+#: wp-auth-custom-api-proxice.php:754
 msgid "Timeout (seconds)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:751
+#: wp-auth-custom-api-proxice.php:755
 msgid "Verify SSL certificate"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:753
+#: wp-auth-custom-api-proxice.php:757
 msgid "Default role"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:754
+#: wp-auth-custom-api-proxice.php:758
 msgid "Local auth roles (comma separated)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:802
+#: wp-auth-custom-api-proxice.php:806
 msgid "External API Authentication"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:810
+#: wp-auth-custom-api-proxice.php:814
 msgid "Expected API response (example)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:847
+#: wp-auth-custom-api-proxice.php:851
 msgid "Yes"
 msgstr ""

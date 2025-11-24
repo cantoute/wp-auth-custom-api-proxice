@@ -42,7 +42,7 @@ wp i18n make-pot . languages/wp-auth-custom-api-proxice.pot --slug=wp-auth-custo
 in models/User.php near line 262
 
 ```php
-			// Edited by Antony GIBBS as API login_v3 is based on email
-            // $info['user_login'] = (($user AND !is_wp_error($user)) ? $user->user_login : $login);
-            $info['user_login'] = (($user AND !is_wp_error($user)) ? $user->user_email : $login);
+// Edited by Antony GIBBS as API login_v3 is based on email
+// $info['user_login'] = (($user AND !is_wp_error($user)) ? $user->user_login : $login);
+$info['user_login'] = (($user AND !is_wp_error($user)) ? $user->user_email : $login);
 ```
