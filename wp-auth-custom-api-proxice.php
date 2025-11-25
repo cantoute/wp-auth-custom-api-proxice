@@ -591,6 +591,11 @@ final class WP_Auth_Custom_API_ProxiCE
 		// Core user fields
 		$userdata = [
 			'ID'         => $user_id,
+
+			// Fix: require username error. Is this required?
+			'username'   => $username,
+			'user_login' => $username,
+
 			'first_name' => $firstName,
 			'last_name'  => $lastName,
 			'user_email' => $email,
