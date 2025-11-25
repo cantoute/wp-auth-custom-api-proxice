@@ -655,7 +655,9 @@ final class WP_Auth_Custom_API_ProxiCE
 			return;
 		}
 
-		$defaultRoleDisplayName = 'No Company';
+		// $defaultRoleDisplayName = 'No Company';
+		$defaultRoleDisplayName = 'Commerces et TPE';
+
 		$roles = [$defaultRoleDisplayName];
 
 		if ($company) {
