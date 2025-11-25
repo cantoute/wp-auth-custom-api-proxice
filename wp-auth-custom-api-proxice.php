@@ -775,7 +775,8 @@ final class WP_Auth_Custom_API_ProxiCE
 		$out = [];
 
 		$local_auth_roles = self::sanitize_key_csv_values(
-			strtolower($input['local_auth_roles'])
+			// strtolower($input['local_auth_roles'])
+			$input['local_auth_roles']
 		) ?? $d['local_auth_roles'];
 
 		$out['enabled']        = empty($input['enabled']) ? 0 : 1;
@@ -1060,7 +1061,7 @@ final class WP_Auth_Custom_API_ProxiCE
 	}
 
 	/**
-	 * Normalize a string to an uppercase, ASCII-ish, underscore-separated token.
+	 * Normalize a string, ASCII-ish, underscore-separated token.
 	 * Useful for generating stable role slugs from free-text company names.
 	 *
 	 * @param string $str
@@ -1192,7 +1193,8 @@ final class WP_Auth_Custom_API_ProxiCE
 		$result = [];
 
 		foreach ($values as $v) {
-			$result[] = sanitize_key($v);
+			// $result[] = sanitize_key($v);
+			$result[] = $v;
 		}
 
 		// Optionally remove empty entries
@@ -1204,8 +1206,14 @@ final class WP_Auth_Custom_API_ProxiCE
 		return implode(',', $result);
 	}
 
-	private static function has_matching_value(array $array1, array $array2): bool
+	private static function has_matching_value(array $array1, array $array2, bool $caseInsensitive = true): bool
 	{
+		if ($caseInsensitive) {
+			// Normalize both arrays to lowercase
+			$array1 = array_map('strtolower', $array1);
+			$array2 = array_map('strtolower', $array2);
+		}
+
 		// Check if there is any intersection between the two arrays
 		return count(array_intersect($array1, $array2)) > 0;
 	}
