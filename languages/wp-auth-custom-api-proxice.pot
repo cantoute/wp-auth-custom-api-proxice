@@ -9,7 +9,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2025-11-24T20:15:22+01:00\n"
+"POT-Creation-Date: 2025-11-27T19:13:18+01:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.12.0\n"
 "X-Domain: wp-auth-custom-api-proxice\n"
@@ -76,47 +76,47 @@ msgstr ""
 msgid "Cannot create local user without a valid email."
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:728
-#: wp-auth-custom-api-proxice.php:729
+#: wp-auth-custom-api-proxice.php:732
+#: wp-auth-custom-api-proxice.php:733
 msgid "External Auth (ProxiCE)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:749
+#: wp-auth-custom-api-proxice.php:753
 msgid "Connection"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:752
+#: wp-auth-custom-api-proxice.php:756
 msgid "Enable API authentication"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:753
+#: wp-auth-custom-api-proxice.php:757
 msgid "API base URL"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:754
+#: wp-auth-custom-api-proxice.php:758
 msgid "Timeout (seconds)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:755
+#: wp-auth-custom-api-proxice.php:759
 msgid "Verify SSL certificate"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:757
+#: wp-auth-custom-api-proxice.php:761
 msgid "Default role"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:758
-msgid "Local auth roles (comma separated)"
+#: wp-auth-custom-api-proxice.php:762
+msgid "Local auth roles (one per line)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:806
+#: wp-auth-custom-api-proxice.php:813
 msgid "External API Authentication"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:814
+#: wp-auth-custom-api-proxice.php:821
 msgid "Expected API response (example)"
 msgstr ""
 
-#: wp-auth-custom-api-proxice.php:851
+#: wp-auth-custom-api-proxice.php:858
 msgid "Yes"
 msgstr ""
