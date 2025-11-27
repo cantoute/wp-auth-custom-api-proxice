@@ -102,7 +102,7 @@ final class WP_Auth_Custom_API_ProxiCE
 			'sslverify'      => 1,     // Verify TLS certificate
 			'auto_provision' => 1,     // Create local user if missing
 			'role_default'   => 'subscriber', // Fallback role when mapping is not available
-			'local_auth_roles' => 'administrator,particuliers',
+			'local_auth_roles' => "administrator\nparticuliers",
 		];
 	}
 
@@ -145,7 +145,7 @@ final class WP_Auth_Custom_API_ProxiCE
 
 			$user_roles = (array) $user->roles;
 			if (
-				self::has_matching_value($user_roles, explode(',', $opts['local_auth_roles']))
+				self::has_matching_value($user_roles, preg_split("/[\n,]+/", $opts['local_auth_roles']))
 			) {
 				return $user; // trusted: don't override
 			} else {
@@ -542,7 +542,9 @@ final class WP_Auth_Custom_API_ProxiCE
 			'first_name'   => $firstName,
 			'last_name'    => $lastName,
 			'display_name' => $displayName ?: $username,
-			'role'         => sanitize_key((string) $opts['role_default']),
+			// roles in current wordpress aren't respecting sanitize
+			// 'role'         => sanitize_key((string) $opts['role_default']),
+			'role'         => $opts['role_default'],
 		]);
 
 		if (is_wp_error($user_id)) {
@@ -757,7 +759,7 @@ final class WP_Auth_Custom_API_ProxiCE
 			'sslverify'      => __('Verify SSL certificate', 'wp-auth-custom-api-proxice'),
 			'auto_provision' => __('Auto-provision local users', 'wp-auth_custom_api_proxice'),
 			'role_default'   => __('Default role', 'wp-auth-custom-api-proxice'),
-			'local_auth_roles' => __('Local auth roles (comma separated)', 'wp-auth-custom-api-proxice'),
+			'local_auth_roles' => __('Local auth roles (one per line)', 'wp-auth-custom-api-proxice'),
 		];
 
 		foreach ($fields as $key => $label) {
@@ -776,7 +778,7 @@ final class WP_Auth_Custom_API_ProxiCE
 		$d = self::defaults();
 		$out = [];
 
-		$local_auth_roles = self::sanitize_key_csv_values(
+		$local_auth_roles = self::sanitize_key_line_values(
 			// strtolower($input['local_auth_roles'])
 			$input['local_auth_roles']
 		) ?? $d['local_auth_roles'];
@@ -787,7 +789,9 @@ final class WP_Auth_Custom_API_ProxiCE
 		$out['timeout']        = max(1, (int) ($input['timeout'] ?? $d['timeout']));
 		$out['sslverify']      = empty($input['sslverify']) ? 0 : 1;
 		$out['auto_provision'] = empty($input['auto_provision']) ? 0 : 1;
-		$out['role_default']   = sanitize_key($input['role_default'] ?? $d['role_default']);
+		// roles in current wordpress don't respect sanitize
+		// $out['role_default']   = sanitize_key($input['role_default'] ?? $d['role_default']);
+		$out['role_default']   = $input['role_default'] ?? $d['role_default'];
 		$out['local_auth_roles'] = $local_auth_roles;
 
 		return $out;
@@ -873,6 +877,13 @@ final class WP_Auth_Custom_API_ProxiCE
 				printf('<option value="%1$s" %2$s>%3$s</option>', esc_attr($slug), selected($val, $slug, false), esc_html($role['name']));
 			}
 			echo '</select>';
+			return;
+		}
+
+		if ($key === 'local_auth_roles') {
+			echo '<textarea name="' . esc_attr(self::OPTION) . '[' . esc_attr($key) . ']" style="display:block;width:100%;height:80vh;min-height:300px;">';
+			echo htmlspecialchars($val);
+			echo '</textarea>';
 			return;
 		}
 
@@ -1196,7 +1207,7 @@ final class WP_Auth_Custom_API_ProxiCE
 
 		foreach ($values as $v) {
 			// $result[] = sanitize_key($v);
-			$result[] = $v;
+			$result[] = trim($v);
 		}
 
 		// Optionally remove empty entries
@@ -1206,6 +1217,23 @@ final class WP_Auth_Custom_API_ProxiCE
 
 		// Rejoin the cleaned values into a string
 		return implode(',', $result);
+	}
+
+	private static function sanitize_key_line_values(string $txt, bool $removeEmpty = true): string
+	{
+		$values = preg_split("/[\n,]+/", $txt);
+
+		foreach ($values as $v) {
+			// $result[] = sanitize_key($v);
+			$result[] = trim($v);
+		}
+
+		// Optionally remove empty entries
+		if ($removeEmpty) {
+			$result = array_filter($result, fn($v) => $v !== '');
+		}
+
+		return implode("\n", $result);
 	}
 
 	private static function has_matching_value(array $array1, array $array2, bool $caseInsensitive = true): bool
