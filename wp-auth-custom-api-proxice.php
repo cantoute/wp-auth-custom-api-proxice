@@ -881,7 +881,7 @@ final class WP_Auth_Custom_API_ProxiCE
 		}
 
 		if ($key === 'local_auth_roles') {
-			echo '<textarea name="' . esc_attr(self::OPTION) . '[' . esc_attr($key) . ']" style="display:block;width:100%;height:80vh;min-height:300px;">';
+			echo '<textarea name="' . esc_attr(self::OPTION) . '[' . esc_attr($key) . ']" style="display:block;width:100%;height:80vh;min-height:300px;" spellcheck="false">';
 			echo htmlspecialchars($val);
 			echo '</textarea>';
 			return;
