@@ -68,6 +68,8 @@ final class WP_Auth_Custom_API_ProxiCE
 	/** @var array|null Cached raw response of a successful authenticate_via_api call */
 	private static ?array $remote_login_response = null;
 
+	private static ?string $membership_card_expire_date = null;
+
 	/**
 	 * Bootstraps plugin hooks.
 	 *
@@ -84,7 +86,8 @@ final class WP_Auth_Custom_API_ProxiCE
 		add_filter('authenticate', [__CLASS__, 'authenticate_via_api'], 30, 3); // priority (30) to run after core username/password auth
 		add_action('admin_menu', [__CLASS__, 'admin_menu']);
 		add_action('admin_init', [__CLASS__, 'register_settings']);
-		add_action('profile_update', [__CLASS__, 'maybe_sync_profile_back'], 10, 2); // optional no-op
+		// add_action('profile_update', [__CLASS__, 'maybe_sync_profile_back'], 10, 2); // optional no-op
+		add_filter('auth_cookie_expiration', [__CLASS__, 'auth_cookie_expiration'], 10, 3);
 	}
 
 	/**
@@ -618,6 +621,7 @@ final class WP_Auth_Custom_API_ProxiCE
 		if ($membershipCard) {
 			update_user_meta($user_id, 'membership_card', sanitize_text_field((string) $membershipCard));
 			update_user_meta($user_id, 'membership_card_expire_date', sanitize_text_field((string) $membershipCardExpireDate));
+			self::$membership_card_expire_date = $membershipCardExpireDate;
 		} else {
 			delete_user_meta($user_id, 'membership_card');
 			delete_user_meta($user_id, 'membership_card_expire_date');
@@ -1246,6 +1250,38 @@ final class WP_Auth_Custom_API_ProxiCE
 
 		// Check if there is any intersection between the two arrays
 		return count(array_intersect($array1, $array2)) > 0;
+	}
+
+
+	public static function auth_cookie_expiration($length, $user_id, $remember)
+	{
+		if (! $remember) {
+			return $length;
+		}
+
+		$expire = self::$membership_card_expire_date; // string
+		if (empty($expire)) {
+			return $length;
+		}
+
+		$maxLength = 86400 * 365; // 1y
+		$minLength = 3600; // 1h
+
+		$tz   = wp_timezone();
+		$target_dt  = new DateTime($expire, $tz);
+
+		$now_ts = current_time('timestamp');
+
+		$target_ts = $target_dt->getTimestamp();
+		$diff = $target_ts - $now_ts;
+
+		$length = $diff;
+
+		// $minLength < $length < $maxLength
+		$length = min($length, $maxLength);
+		$length = max($length, $minLength);
+
+		return $length;
 	}
 }
 
